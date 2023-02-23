@@ -3,7 +3,7 @@ use crate::utils::fbx_extend::*;
 
 use bevy::{
     pbr::{AlphaMode, StandardMaterial},
-    prelude::{Color, Handle, Image},
+    prelude::{Color, Handle, Image, Material},
     utils::HashMap,
 };
 use fbxcel_dom::v7400::{data::material::ShadingModel, object::material::MaterialHandle};
@@ -13,7 +13,7 @@ use rgb::RGB;
 ///
 /// Define your own to extend `bevy_mod_fbx`'s material loading capabilities.
 #[derive(Clone, Copy)]
-pub struct MaterialLoader {
+pub struct MaterialLoader<M: Material> {
     /// The FBX texture field name used by the material you are loading.
     ///
     /// Textures declared here are directly passed to `with_textures` without modification,
@@ -50,7 +50,7 @@ pub struct MaterialLoader {
     /// Create and return the bevy [`StandardMaterial`] based on the [`Handle<Image>`] loaded
     /// from the return value of `preprocess_textures`.
     pub with_textures:
-        fn(MaterialHandle, HashMap<&'static str, Handle<Image>>) -> Option<StandardMaterial>,
+        fn(MaterialHandle, HashMap<&'static str, Handle<Image>>) -> Option<M>,
 }
 
 const SPECULAR_TO_METALLIC_RATIO: f32 = 0.8;
@@ -60,7 +60,7 @@ const SPECULAR_TO_METALLIC_RATIO: f32 = 0.8;
 ///
 /// Note that the conversion has very poor fidelity, since Phong doesn't map well
 /// to PBR.
-pub const LOAD_LAMBERT_PHONG: MaterialLoader = MaterialLoader {
+pub const LOAD_LAMBERT_PHONG: MaterialLoader<StandardMaterial> = MaterialLoader {
     static_load: &[
         "NormalMap",
         "EmissiveColor",
@@ -114,7 +114,7 @@ pub const LOAD_LAMBERT_PHONG: MaterialLoader = MaterialLoader {
 ///
 /// Picks up the non-texture material values if possible,
 /// otherwise it will just look like white clay.
-pub const LOAD_FALLBACK: MaterialLoader = MaterialLoader {
+pub const LOAD_FALLBACK: MaterialLoader<StandardMaterial> = MaterialLoader {
     static_load: &[],
     dynamic_load: &[],
     preprocess_textures: |_, _| {},
@@ -163,7 +163,7 @@ mod maya_consts {
 ///
 /// This loader is only available if the `maya_pbr` feature is enabled.
 #[cfg(feature = "maya_3dsmax_pbr")]
-pub const LOAD_MAYA_PBR: MaterialLoader = MaterialLoader {
+pub const LOAD_MAYA_PBR: MaterialLoader<StandardMaterial> = MaterialLoader {
     static_load: &[
         "Maya|TEX_normal_map",
         "Maya|TEX_color_map",
@@ -268,7 +268,7 @@ pub const LOAD_MAYA_PBR: MaterialLoader = MaterialLoader {
 /// and still want to fallback to the default ones.
 ///
 /// [`FbxMaterialLoaders`]: crate::FbxMaterialLoaders
-pub const fn default_loader_order() -> &'static [MaterialLoader] {
+pub const fn default_loader_order() -> &'static [MaterialLoader<StandardMaterial>] {
     &[
         #[cfg(feature = "maya_3dsmax_pbr")]
         LOAD_MAYA_PBR,

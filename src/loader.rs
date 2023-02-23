@@ -7,7 +7,7 @@ use bevy::{
     prelude::{
         debug, error, info, trace, BuildWorldChildren, FromWorld, Handle, Image, Mesh, Name,
         PbrBundle, Scene, StandardMaterial, Transform, TransformBundle, VisibilityBundle, World,
-        WorldChildBuilder,
+        WorldChildBuilder, Material, MaterialMeshBundle,
     },
     render::{
         mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
@@ -47,32 +47,32 @@ use crate::{
 /// Although it doesn't mean much in practice.
 const FBX_TO_BEVY_SCALE_FACTOR: f32 = 0.01;
 
-pub struct Loader<'b, 'w> {
-    scene: FbxScene,
+pub struct Loader<'b, 'w, M: Material> {
+    scene: FbxScene<M>,
     load_context: &'b mut LoadContext<'w>,
     suported_compressed_formats: CompressedImageFormats,
-    material_loaders: Vec<MaterialLoader>,
+    material_loaders: Vec<MaterialLoader<M>>,
 }
 
-pub struct FbxLoader {
+pub struct FbxLoader<M: Material> {
     supported: CompressedImageFormats,
-    material_loaders: Vec<MaterialLoader>,
+    material_loaders: Vec<MaterialLoader<M>>,
 }
-impl FromWorld for FbxLoader {
+impl FromWorld for FbxLoader<StandardMaterial> {
     fn from_world(world: &mut World) -> Self {
         let supported = match world.get_resource::<RenderDevice>() {
             Some(render_device) => CompressedImageFormats::from_features(render_device.features()),
 
             None => CompressedImageFormats::all(),
         };
-        let loaders: crate::FbxMaterialLoaders = world.get_resource().cloned().unwrap_or_default();
+        let loaders: crate::FbxMaterialLoaders<StandardMaterial> = world.get_resource().cloned().unwrap_or_default();
         Self {
             supported,
             material_loaders: loaders.0,
         }
     }
 }
-impl AssetLoader for FbxLoader {
+impl<M: Material> AssetLoader for FbxLoader<M> where M: Default {
     fn load<'a>(
         &'a self,
         bytes: &'a [u8],
@@ -104,11 +104,11 @@ impl AssetLoader for FbxLoader {
     }
 }
 
-fn spawn_scene(
+fn spawn_scene<M: Material>(
     fbx_file_scale: f32,
     roots: &[ObjectId],
     hierarchy: &HashMap<ObjectId, FbxObject>,
-    models: &HashMap<ObjectId, FbxMesh>,
+    models: &HashMap<ObjectId, FbxMesh<M>>,
 ) -> Scene {
     #[cfg(feature = "profile")]
     let _generate_scene_span = info_span!("generate_scene").entered();
@@ -129,11 +129,11 @@ fn spawn_scene(
         });
     Scene::new(scene_world)
 }
-fn spawn_scene_rec(
+fn spawn_scene_rec<M: Material>(
     current: ObjectId,
     commands: &mut WorldChildBuilder,
     hierarchy: &HashMap<ObjectId, FbxObject>,
-    models: &HashMap<ObjectId, FbxMesh>,
+    models: &HashMap<ObjectId, FbxMesh<M>>,
 ) {
     let current_node = match hierarchy.get(&current) {
         Some(node) => node,
@@ -149,7 +149,7 @@ fn spawn_scene_rec(
     entity.with_children(|commands| {
         if let Some(mesh) = models.get(&current) {
             for (mat, bevy_mesh) in mesh.materials.iter().zip(&mesh.bevy_mesh_handles) {
-                let mut entity = commands.spawn(PbrBundle {
+                let mut entity = commands.spawn(MaterialMeshBundle {
                     mesh: bevy_mesh.clone(),
                     material: mat.clone(),
                     ..Default::default()
@@ -165,14 +165,14 @@ fn spawn_scene_rec(
     });
 }
 
-impl<'b, 'w> Loader<'b, 'w> {
+impl<'b, 'w, M: Material> Loader<'b, 'w, M> where M: Default {
     fn new(
         formats: CompressedImageFormats,
-        loaders: Vec<MaterialLoader>,
+        loaders: Vec<MaterialLoader<M>>,
         load_context: &'b mut LoadContext<'w>,
     ) -> Self {
         Self {
-            scene: FbxScene::default(),
+            scene: FbxScene::<M>::default(),
             load_context,
             material_loaders: loaders,
             suported_compressed_formats: formats,
@@ -411,7 +411,7 @@ impl<'b, 'w> Loader<'b, 'w> {
     async fn load_mesh(
         &mut self,
         mesh_obj: object::model::MeshHandle<'_>,
-    ) -> anyhow::Result<FbxMesh> {
+    ) -> anyhow::Result<FbxMesh<M>> {
         let label = if let Some(name) = mesh_obj.name() {
             format!("FbxMesh@{name}")
         } else {
@@ -506,8 +506,8 @@ impl<'b, 'w> Loader<'b, 'w> {
             dynamic_load,
             preprocess_textures,
             with_textures,
-        }: MaterialLoader,
-    ) -> anyhow::Result<Option<StandardMaterial>> {
+        }: MaterialLoader<M>,
+    ) -> anyhow::Result<Option<M>> {
         use crate::utils::fbx_extend::*;
         enum TextureSource<'a> {
             Processed(Image),
@@ -611,7 +611,7 @@ impl<'b, 'w> Loader<'b, 'w> {
     async fn load_material(
         &mut self,
         material_obj: object::material::MaterialHandle<'_>,
-    ) -> anyhow::Result<Handle<StandardMaterial>> {
+    ) -> anyhow::Result<Handle<M>> {
         let label = match material_obj.name() {
             Some(name) if !name.is_empty() => format!("FbxMaterial@{name}"),
             _ => format!("FbxMaterial{}", material_obj.object_id().raw()),
@@ -625,7 +625,8 @@ impl<'b, 'w> Loader<'b, 'w> {
 
         let mut material = None;
         let loaders = self.material_loaders.clone();
-        for &loader in &loaders {
+        //sus &
+        for loader in loaders {
             if let Some(loader_material) = self.run_loader(material_obj, loader).await? {
                 material = Some(loader_material);
                 break;

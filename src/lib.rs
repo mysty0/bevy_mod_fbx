@@ -1,4 +1,4 @@
-use bevy::prelude::{AddAsset, App, Plugin, Resource};
+use bevy::prelude::{AddAsset, App, Plugin, Resource, Material, StandardMaterial};
 
 pub use data::{FbxMesh, FbxScene};
 pub use loader::FbxLoader;
@@ -27,8 +27,8 @@ pub struct FbxPlugin;
 ///
 /// The default loaders are defined by [`material_loader::default_loader_order`].
 #[derive(Clone, Resource)]
-pub struct FbxMaterialLoaders(pub Vec<MaterialLoader>);
-impl Default for FbxMaterialLoaders {
+pub struct FbxMaterialLoaders<M: Material>(pub Vec<MaterialLoader<M>>);
+impl Default for FbxMaterialLoaders<StandardMaterial> {
     fn default() -> Self {
         Self(material_loader::default_loader_order().into())
     }
@@ -36,8 +36,8 @@ impl Default for FbxMaterialLoaders {
 
 impl Plugin for FbxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset_loader::<FbxLoader>()
-            .add_asset::<FbxMesh>()
-            .add_asset::<FbxScene>();
+        app.init_asset_loader::<FbxLoader<StandardMaterial>>()
+            .add_asset::<FbxMesh<StandardMaterial>>()
+            .add_asset::<FbxScene<StandardMaterial>>();
     }
 }
