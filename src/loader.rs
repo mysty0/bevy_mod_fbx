@@ -454,8 +454,168 @@ impl<'b, 'w, M: Material> Loader<'b, 'w, M> where M: Default {
         Ok(mesh)
     }
 
-    async fn load_video_clip(
+
+
+    async fn load_material(
         &mut self,
+        material_obj: object::material::MaterialHandle<'_>,
+    ) -> anyhow::Result<Handle<M>> {
+        let label = match material_obj.name() {
+            Some(name) if !name.is_empty() => format!("FbxMaterial@{name}"),
+            _ => format!("FbxMaterial{}", material_obj.object_id().raw()),
+        };
+        if let Some(handle) = self.scene.materials.get(&label) {
+            debug!("Already encountered material: {label}, skipping");
+
+            return Ok(handle.clone_weak());
+        }
+        debug!("Loading FBX material: {label}");
+
+        let mut material = None;
+        let loaders = self.material_loaders.clone();
+        //sus &
+        for loader in loaders {
+            if let Some(loader_material) = self.run_loader(material_obj, loader).await? {
+                material = Some(loader_material);
+                break;
+            }
+        }
+        let material = material.context("None of the material loaders could load this material")?;
+        let handle = self
+            .load_context
+            .set_labeled_asset(&label, LoadedAsset::new(material));
+        debug!("Successfully loaded material: {label}");
+
+        self.scene.materials.insert(label, handle.clone());
+        Ok(handle)
+    }
+}
+
+trait RawMaterialLoader<M: Material> {
+    async fn load(texture_loader: &TextureLoader, material_obj: object::material::MaterialHandle<'_>) -> anyhow::Result<Option<M>>;
+}
+impl<M> MaterialLoader<M> for RawMaterialLoader<M>{
+    async fn run_loader(
+        &mut self,
+        material_obj: object::material::MaterialHandle<'_>,
+        MaterialLoader {
+            static_load,
+            dynamic_load,
+            preprocess_textures,
+            with_textures,
+        }: MaterialLoader<M>,
+    ) -> anyhow::Result<Option<M>> {
+        use crate::utils::fbx_extend::*;
+        enum TextureSource<'a> {
+            Processed(Image),
+            Handle(TextureHandle<'a>),
+        }
+        let mut textures = HashMap::default();
+        // code is a bit tricky so here is a rundown:
+        // 1. Load all textures that are meant to be preprocessed by the
+        //    MaterialLoader
+        for &label in dynamic_load {
+            if let Some(texture) = material_obj.find_texture(label) {
+                let texture = self.get_texture(texture).await?;
+                textures.insert(label, texture);
+            }
+        }
+
+        preprocess_textures(material_obj, &mut textures);
+        // 2. Put the loaded images and the non-preprocessed texture labels into an iterator
+        let mut texture_handles = HashMap::with_capacity(textures.len() + static_load.len());
+        let texture_handles_iter = textures
+            .drain()
+            .map(|(label, image)| (label, TextureSource::Processed(image)))
+            .chain(static_load.iter().filter_map(|l| {
+                material_obj
+                    .find_texture(l)
+                    .map(|te| (*l, TextureSource::Handle(te)))
+            }));
+        // 3. For each of those, create an image handle (with potential caching based on the texture name)
+        for (label, texture) in texture_handles_iter {
+            let handle_label = match texture {
+                TextureSource::Handle(texture_handle) => match texture_handle.name() {
+                    Some(name) if !name.is_empty() => format!("FbxTexture@{name}"),
+                    _ => format!("FbxTexture{}", texture_handle.object_id().raw()),
+                },
+                TextureSource::Processed(_) => match material_obj.name() {
+                    Some(name) if !name.is_empty() => format!("FbxTextureMat@{name}/{label}"),
+                    _ => format!("FbxTextureMat{}/{label}", material_obj.object_id().raw()),
+                },
+            };
+
+            // Either copy the already-created handle or create a new asset
+            // for each image or texture to load.
+            let handle = if let Some(handle) = self.scene.textures.get(&handle_label) {
+                debug!("Already encountered texture: {label}, skipping");
+
+                handle.clone()
+            } else {
+                let texture = match texture {
+                    TextureSource::Processed(texture) => texture,
+                    TextureSource::Handle(texture) => self.get_texture(texture).await?,
+                };
+                let handle = self
+                    .load_context
+                    .set_labeled_asset(&handle_label, LoadedAsset::new(texture));
+                self.scene.textures.insert(handle_label, handle.clone());
+                handle
+            };
+            texture_handles.insert(label, handle);
+        }
+        // 4. Call with all the texture handles
+        Ok(with_textures(material_obj, texture_handles))
+    }
+}
+
+struct TextureLoader<'a, 'b, 'w> {
+    textures: &'a HashMap<String, Handle<Image>>,
+    load_context: &'b mut LoadContext<'w>,
+    suported_compressed_formats: CompressedImageFormats,
+}
+
+impl<'a, 'b, 'w> TextureLoader<'a, 'b, 'w> {
+    pub async fn get_texture(
+        &self,
+        texture_obj: object::texture::TextureHandle<'_>,
+    ) -> anyhow::Result<Image> {
+        let properties = texture_obj.properties();
+        let address_mode_u = {
+            let val = properties
+                .wrap_mode_u_or_default()
+                .context("Failed to load wrap mode for U axis")?;
+            match val {
+                WrapMode::Repeat => AddressMode::Repeat,
+                WrapMode::Clamp => AddressMode::ClampToEdge,
+            }
+        };
+        let address_mode_v = {
+            let val = properties
+                .wrap_mode_v_or_default()
+                .context("Failed to load wrap mode for V axis")?;
+            match val {
+                WrapMode::Repeat => AddressMode::Repeat,
+                WrapMode::Clamp => AddressMode::ClampToEdge,
+            }
+        };
+        let video_clip_obj = texture_obj
+            .video_clip()
+            .context("No image data for texture object")?;
+
+        let image: Result<Image, anyhow::Error> = self.load_video_clip(video_clip_obj).await;
+        let mut image = image.context("Failed to load texture image")?;
+
+        image.sampler_descriptor = ImageSampler::Descriptor(SamplerDescriptor {
+            address_mode_u,
+            address_mode_v,
+            ..Default::default()
+        });
+        Ok(image)
+    }
+
+    pub async fn load_video_clip(
+        &self,
         video_clip_obj: object::video::ClipHandle<'_>,
     ) -> anyhow::Result<Image> {
         debug!("Loading texture image: {:?}", video_clip_obj.name());
@@ -496,151 +656,6 @@ impl<'b, 'w, M: Material> Loader<'b, 'w, M> where M: Default {
         );
 
         Ok(image)
-    }
-
-    async fn run_loader(
-        &mut self,
-        material_obj: object::material::MaterialHandle<'_>,
-        MaterialLoader {
-            static_load,
-            dynamic_load,
-            preprocess_textures,
-            with_textures,
-        }: MaterialLoader<M>,
-    ) -> anyhow::Result<Option<M>> {
-        use crate::utils::fbx_extend::*;
-        enum TextureSource<'a> {
-            Processed(Image),
-            Handle(TextureHandle<'a>),
-        }
-        let mut textures = HashMap::default();
-        // code is a bit tricky so here is a rundown:
-        // 1. Load all textures that are meant to be preprocessed by the
-        //    MaterialLoader
-        for &label in dynamic_load {
-            if let Some(texture) = material_obj.load_texture(label) {
-                let texture = self.get_texture(texture).await?;
-                textures.insert(label, texture);
-            }
-        }
-
-        preprocess_textures(material_obj, &mut textures);
-        // 2. Put the loaded images and the non-preprocessed texture labels into an iterator
-        let mut texture_handles = HashMap::with_capacity(textures.len() + static_load.len());
-        let texture_handles_iter = textures
-            .drain()
-            .map(|(label, image)| (label, TextureSource::Processed(image)))
-            .chain(static_load.iter().filter_map(|l| {
-                material_obj
-                    .load_texture(l)
-                    .map(|te| (*l, TextureSource::Handle(te)))
-            }));
-        // 3. For each of those, create an image handle (with potential caching based on the texture name)
-        for (label, texture) in texture_handles_iter {
-            let handle_label = match texture {
-                TextureSource::Handle(texture_handle) => match texture_handle.name() {
-                    Some(name) if !name.is_empty() => format!("FbxTexture@{name}"),
-                    _ => format!("FbxTexture{}", texture_handle.object_id().raw()),
-                },
-                TextureSource::Processed(_) => match material_obj.name() {
-                    Some(name) if !name.is_empty() => format!("FbxTextureMat@{name}/{label}"),
-                    _ => format!("FbxTextureMat{}/{label}", material_obj.object_id().raw()),
-                },
-            };
-
-            // Either copy the already-created handle or create a new asset
-            // for each image or texture to load.
-            let handle = if let Some(handle) = self.scene.textures.get(&handle_label) {
-                debug!("Already encountered texture: {label}, skipping");
-
-                handle.clone()
-            } else {
-                let texture = match texture {
-                    TextureSource::Processed(texture) => texture,
-                    TextureSource::Handle(texture) => self.get_texture(texture).await?,
-                };
-                let handle = self
-                    .load_context
-                    .set_labeled_asset(&handle_label, LoadedAsset::new(texture));
-                self.scene.textures.insert(handle_label, handle.clone());
-                handle
-            };
-            texture_handles.insert(label, handle);
-        }
-        // 4. Call with all the texture handles
-        Ok(with_textures(material_obj, texture_handles))
-    }
-
-    async fn get_texture(
-        &mut self,
-        texture_obj: object::texture::TextureHandle<'_>,
-    ) -> anyhow::Result<Image> {
-        let properties = texture_obj.properties();
-        let address_mode_u = {
-            let val = properties
-                .wrap_mode_u_or_default()
-                .context("Failed to load wrap mode for U axis")?;
-            match val {
-                WrapMode::Repeat => AddressMode::Repeat,
-                WrapMode::Clamp => AddressMode::ClampToEdge,
-            }
-        };
-        let address_mode_v = {
-            let val = properties
-                .wrap_mode_v_or_default()
-                .context("Failed to load wrap mode for V axis")?;
-            match val {
-                WrapMode::Repeat => AddressMode::Repeat,
-                WrapMode::Clamp => AddressMode::ClampToEdge,
-            }
-        };
-        let video_clip_obj = texture_obj
-            .video_clip()
-            .context("No image data for texture object")?;
-
-        let image: Result<Image, anyhow::Error> = self.load_video_clip(video_clip_obj).await;
-        let mut image = image.context("Failed to load texture image")?;
-
-        image.sampler_descriptor = ImageSampler::Descriptor(SamplerDescriptor {
-            address_mode_u,
-            address_mode_v,
-            ..Default::default()
-        });
-        Ok(image)
-    }
-
-    async fn load_material(
-        &mut self,
-        material_obj: object::material::MaterialHandle<'_>,
-    ) -> anyhow::Result<Handle<M>> {
-        let label = match material_obj.name() {
-            Some(name) if !name.is_empty() => format!("FbxMaterial@{name}"),
-            _ => format!("FbxMaterial{}", material_obj.object_id().raw()),
-        };
-        if let Some(handle) = self.scene.materials.get(&label) {
-            debug!("Already encountered material: {label}, skipping");
-
-            return Ok(handle.clone_weak());
-        }
-        debug!("Loading FBX material: {label}");
-
-        let mut material = None;
-        let loaders = self.material_loaders.clone();
-        //sus &
-        for loader in loaders {
-            if let Some(loader_material) = self.run_loader(material_obj, loader).await? {
-                material = Some(loader_material);
-                break;
-            }
-        }
-        let material = material.context("None of the material loaders could load this material")?;
-        let handle = self
-            .load_context
-            .set_labeled_asset(&label, LoadedAsset::new(material));
-        debug!("Successfully loaded material: {label}");
-
-        self.scene.materials.insert(label, handle.clone());
-        Ok(handle)
     }
 }
 
