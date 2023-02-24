@@ -6,7 +6,7 @@ use bevy::{
     prelude::{Color, Handle, Image, Material},
     utils::HashMap,
 };
-use fbxcel_dom::v7400::{data::material::ShadingModel, object::material::MaterialHandle};
+use fbxcel_dom::v7400::{data::material::ShadingModel, object::{material::MaterialHandle}};
 use rgb::RGB;
 
 /// Load materials from an FBX file.
@@ -69,7 +69,7 @@ pub const LOAD_LAMBERT_PHONG: MaterialLoader<StandardMaterial> = MaterialLoader 
     ],
     dynamic_load: &[],
     preprocess_textures: |_, _| {},
-    with_textures: |material_obj, textures| {
+    with_textures: |material_obj, textures| {        
         use AlphaMode::{Blend, Opaque};
         use ShadingModel::{Lambert, Phong};
         let properties = material_obj.properties();

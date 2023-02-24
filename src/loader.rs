@@ -58,14 +58,14 @@ pub struct FbxLoader<M: Material> {
     supported: CompressedImageFormats,
     material_loaders: Vec<MaterialLoader<M>>,
 }
-impl FromWorld for FbxLoader<StandardMaterial> {
+impl<M: Material> FromWorld for FbxLoader<M> where crate::FbxMaterialLoaders<M>: std::default::Default {
     fn from_world(world: &mut World) -> Self {
         let supported = match world.get_resource::<RenderDevice>() {
             Some(render_device) => CompressedImageFormats::from_features(render_device.features()),
 
             None => CompressedImageFormats::all(),
         };
-        let loaders: crate::FbxMaterialLoaders<StandardMaterial> = world.get_resource().cloned().unwrap_or_default();
+        let loaders: crate::FbxMaterialLoaders<M> = world.get_resource().cloned().unwrap_or_default();
         Self {
             supported,
             material_loaders: loaders.0,
@@ -523,6 +523,7 @@ impl<'b, 'w, M: Material> Loader<'b, 'w, M> where M: Default {
                 textures.insert(label, texture);
             }
         }
+
         preprocess_textures(material_obj, &mut textures);
         // 2. Put the loaded images and the non-preprocessed texture labels into an iterator
         let mut texture_handles = HashMap::with_capacity(textures.len() + static_load.len());
