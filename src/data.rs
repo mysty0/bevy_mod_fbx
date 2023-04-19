@@ -24,9 +24,9 @@ pub struct FbxMesh<M: Material = StandardMaterial> {
 ///
 /// [`Scene`]: bevy::scene::Scene
 /// [`Name`]: bevy::core::Name
-#[derive(Default, Debug, Clone, TypeUuid)]
+#[derive(Debug, Clone, TypeUuid)]
 #[uuid = "e87d49b6-8d6a-43c7-bb33-5315db8516eb"]
-pub struct FbxScene<M: Material = StandardMaterial> {
+pub struct FbxScene<M: Material> {
     pub name: Option<String>,
     pub bevy_meshes: HashMap<Handle<Mesh>, String>,
     pub materials: HashMap<String, Handle<M>>,
@@ -34,6 +34,20 @@ pub struct FbxScene<M: Material = StandardMaterial> {
     pub meshes: HashMap<ObjectId, Handle<FbxMesh<M>>>,
     pub hierarchy: HashMap<ObjectId, FbxObject>,
     pub roots: Vec<ObjectId>,
+}
+
+impl <M: Material> Default for FbxScene<M> {
+    fn default() -> Self {
+        Self {
+            name: None,
+            bevy_meshes: HashMap::default(),
+            materials: HashMap::default(),
+            textures: HashMap::default(),
+            meshes: HashMap::default(),
+            hierarchy: HashMap::default(),
+            roots: Vec::default()
+        }
+    }
 }
 
 /// An FBX object in the scene tree.
