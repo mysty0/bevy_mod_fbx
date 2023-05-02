@@ -1,4 +1,6 @@
-use bevy::prelude::{AddAsset, App, Plugin, Resource};
+use std::marker::PhantomData;
+
+use bevy::{prelude::{AddAsset, App, Plugin, Resource, Material, StandardMaterial}, render::{render_resource::VertexFormat, mesh::MeshVertexAttribute}};
 
 pub use data::{FbxMesh, FbxScene};
 pub use loader::FbxLoader;
@@ -7,9 +9,12 @@ pub(crate) mod data;
 pub(crate) mod fbx_transform;
 pub(crate) mod loader;
 pub mod material_loader;
-pub(crate) mod utils;
+pub mod utils;
 
-use material_loader::MaterialLoader;
+use material_loader::{MaterialLoader, RawMaterialLoader};
+
+pub const ATTRIBUTE_NORMAL_MAP_UV: MeshVertexAttribute =
+    MeshVertexAttribute::new("NormalMapUv", 88575, VertexFormat::Float32x2);
 
 /// Adds support for FBX file loading to the app.
 #[derive(Default)]
@@ -27,17 +32,13 @@ pub struct FbxPlugin;
 ///
 /// The default loaders are defined by [`material_loader::default_loader_order`].
 #[derive(Clone, Resource)]
-pub struct FbxMaterialLoaders(pub Vec<MaterialLoader>);
-impl Default for FbxMaterialLoaders {
-    fn default() -> Self {
-        Self(material_loader::default_loader_order().into())
-    }
-}
+pub struct FbxMaterialLoaders<'b, M: Material>(pub Vec<&'b (dyn RawMaterialLoader<M>)>);
 
 impl Plugin for FbxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset_loader::<FbxLoader>()
-            .add_asset::<FbxMesh>()
-            .add_asset::<FbxScene>();
+        app
+            .init_asset_loader::<FbxLoader<StandardMaterial>>()
+            .add_asset::<FbxMesh<StandardMaterial>>()
+            .add_asset::<FbxScene<StandardMaterial>>();
     }
 }
